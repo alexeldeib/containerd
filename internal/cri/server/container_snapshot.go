@@ -127,7 +127,7 @@ func (c *criService) createContainerSnapshot(ctx context.Context, container cont
 }
 
 // prepareRestoreSnapshot downloads a snapshot from S3 and prepares it for container creation
-func (c *criService) prepareRestoreSnapshot(ctx context.Context, containerID, imageRef, containerSnapshotKey, version string) (string, error) {
+func (c *criService) prepareRestoreSnapshot(ctx context.Context, containerID, imageRef, containerSnapshotKey, version, snapshotterName string) (string, error) {
 	// Validate input parameters
 	if containerID == "" {
 		return "", fmt.Errorf("container ID cannot be empty")
@@ -201,7 +201,7 @@ func (c *criService) prepareRestoreSnapshot(ctx context.Context, containerID, im
 	chainID := identity.ChainID(diffIDs).String()
 
 	// Get the snapshotter
-	snapshotter := c.client.SnapshotService("overlayfs") // TODO: make configurable
+	snapshotter := c.client.SnapshotService(snapshotterName) // TODO: make configurable
 
 	// Create a temporary snapshot for applying our downloaded layer
 	tempKey := fmt.Sprintf("restore-temp-%s-%d", containerID, time.Now().UnixNano())

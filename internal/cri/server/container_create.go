@@ -372,7 +372,7 @@ func (c *criService) createContainer(r *createContainerRequest) (_ string, retEr
 
 					// Use container name for individual container snapshots
 					containerSnapshotKey := fmt.Sprintf("%s/%s", snapshotKey, containerName)
-					restoredSnapshotKey, err := c.prepareRestoreSnapshot(r.ctx, r.containerID, r.imageID, containerSnapshotKey, version)
+					restoredSnapshotKey, err := c.prepareRestoreSnapshot(r.ctx, r.containerID, r.imageID, containerSnapshotKey, version, c.RuntimeSnapshotter(r.ctx, ociRuntime))
 					if err != nil {
 						log.G(r.ctx).WithError(err).Errorf("Failed to prepare restore snapshot for container %s (version=%s)", r.containerID, version)
 						// Continue with normal creation if restore fails
