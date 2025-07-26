@@ -35,6 +35,7 @@ func (c *criService) RemoveContainer(ctx context.Context, r *runtime.RemoveConta
 	span := tracing.SpanFromContext(ctx)
 	start := time.Now()
 	ctrID := r.GetContainerId()
+	log.G(ctx).Infof("RemoveContainer called for container ID: %s", ctrID)
 	container, err := c.containerStore.Get(ctrID)
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
@@ -102,6 +103,56 @@ func (c *criService) RemoveContainer(ctx context.Context, r *runtime.RemoveConta
 	// container so as to avoid start/restart the container again. However, for current
 	// kubelet implementation, we'll never start a container once we decide to remove it,
 	// so we don't need the "Dead" state for now.
+
+	// Check if container needs snapshot before removal based on sandbox annotations
+	log.G(ctx).Infof("RemoveContainer: checking snapshot policy for container %s", id)
+
+	// Get sandbox to check annotations
+	sandbox, sandboxErr := c.sandboxStore.Get(container.SandboxID)
+	if sandboxErr != nil {
+		log.G(ctx).WithError(sandboxErr).Errorf("Failed to get sandbox for container %s", id)
+	} else if sandbox.Config.GetAnnotations() == nil {
+		log.G(ctx).Debugf("Container %s sandbox has no annotations", id)
+	} else {
+		annotations := sandbox.Config.GetAnnotations()
+		log.G(ctx).Debugf("Container %s sandbox annotations: %v", id, annotations)
+
+		if annotations["alexeldeib.xyz/snapshot"] == "true" {
+			log.G(ctx).Infof("Container %s requests snapshot creation", id)
+			// Extract namespace and pod name from sandbox metadata
+			sandboxMetadata := sandbox.Config.GetMetadata()
+			if sandboxMetadata != nil {
+				namespace := sandboxMetadata.GetNamespace()
+				podName := sandboxMetadata.GetName()
+				containerName := container.Config.GetLabels()["io.kubernetes.container.name"]
+
+				if namespace != "" && podName != "" && containerName != "" {
+					// Get snapshot version from annotation, default to "latest" if not specified
+					version := annotations["alexeldeib.xyz/snapshot-version"]
+					if version == "" {
+						version = "latest"
+					}
+
+					// Use namespace + pod name to form unique snapshot key
+					snapshotKey := fmt.Sprintf("%s/%s", namespace, podName)
+					// Use container name for individual container snapshots
+					containerSnapshotKey := fmt.Sprintf("%s/%s", snapshotKey, containerName)
+
+					log.G(ctx).Infof("Creating snapshot for container %s (namespace=%s, pod=%s, container=%s, version=%s)", id, namespace, podName, containerName, version)
+					if err := c.createContainerSnapshot(ctx, container, containerSnapshotKey, version); err != nil {
+						log.G(ctx).WithError(err).Errorf("Failed to create snapshot for container %s (namespace=%s, pod=%s, version=%s)", id, namespace, podName, version)
+						// Continue with removal even if snapshot fails
+					}
+				} else {
+					log.G(ctx).Debugf("Container %s missing required metadata for snapshot (namespace=%s, podName=%s, containerName=%s)", id, namespace, podName, containerName)
+				}
+			} else {
+				log.G(ctx).Debugf("Container %s sandbox has no metadata for snapshot", id)
+			}
+		} else {
+			log.G(ctx).Debugf("Container %s snapshot annotation not found or not set to 'true'", id)
+		}
+	}
 
 	// Delete containerd container.
 	if err := container.Container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {

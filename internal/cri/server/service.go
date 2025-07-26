@@ -157,6 +157,8 @@ type criService struct {
 	runtimeHandlers map[string]*runtime.RuntimeHandler
 	// runtimeFeatures container runtime features info
 	runtimeFeatures *runtime.RuntimeFeatures
+	// s3Client is used for snapshot storage
+	s3Client *S3Client
 }
 
 type CRIServiceOptions struct {
@@ -212,6 +214,22 @@ func NewCRIService(options *CRIServiceOptions) (CRIService, runtime.RuntimeServi
 
 	if err := c.initPlatform(); err != nil {
 		return nil, nil, fmt.Errorf("initialize platform: %w", err)
+	}
+
+	// Initialize S3 client for snapshot storage
+	log.L.Info("Initializing CRI service with snapshot support")
+	s3Config := LoadS3Config()
+	log.L.Infof("S3 Config loaded: endpoint=%s, bucket=%s, hasKeys=%v", s3Config.Endpoint, s3Config.Bucket, s3Config.AccessKey != "")
+	if s3Config.AccessKey != "" && s3Config.SecretKey != "" && s3Config.Endpoint != "" {
+		s3Client, err := NewS3Client(*s3Config)
+		if err != nil {
+			log.L.WithError(err).Warn("Failed to create S3 client for snapshot storage")
+		} else {
+			c.s3Client = s3Client
+			log.L.Info("S3 client initialized for snapshot storage")
+		}
+	} else {
+		log.L.Info("S3 configuration not found, snapshot upload/download will use local files")
 	}
 
 	// prepare streaming server

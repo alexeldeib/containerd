@@ -342,15 +342,68 @@ func (c *criService) createContainer(r *createContainerRequest) (_ string, retEr
 		return "", err
 	}
 
+	// Check if this is a restore operation based on sandbox annotations
+	var restoreSnapshot string
+	if r.sandbox.Config.GetAnnotations() == nil {
+		log.G(r.ctx).Debugf("Container %s sandbox has no annotations", r.containerID)
+	} else {
+		annotations := r.sandbox.Config.GetAnnotations()
+		log.G(r.ctx).Debugf("Container %s sandbox annotations: %v", r.containerID, annotations)
+
+		if annotations["alexeldeib.xyz/restore"] == "true" {
+			log.G(r.ctx).Infof("Container %s requests restore from snapshot", r.containerID)
+			// Extract namespace and pod name from sandbox metadata
+			sandboxMetadata := r.sandbox.Config.GetMetadata()
+			if sandboxMetadata != nil {
+				namespace := sandboxMetadata.GetNamespace()
+				podName := sandboxMetadata.GetName()
+				containerName := r.containerConfig.GetLabels()["io.kubernetes.container.name"]
+
+				if namespace != "" && podName != "" && containerName != "" {
+					// Get snapshot version from annotation, default to "latest" if not specified
+					version := annotations["alexeldeib.xyz/snapshot-version"]
+					if version == "" {
+						version = "latest"
+					}
+
+					// Use namespace + pod name to form unique snapshot key
+					snapshotKey := fmt.Sprintf("%s/%s", namespace, podName)
+					log.G(r.ctx).Infof("Container requests restore from snapshot (namespace=%s, pod=%s, container=%s, version=%s)", namespace, podName, containerName, version)
+
+					// Use container name for individual container snapshots
+					containerSnapshotKey := fmt.Sprintf("%s/%s", snapshotKey, containerName)
+					restoredSnapshotKey, err := c.prepareRestoreSnapshot(r.ctx, r.containerID, r.imageID, containerSnapshotKey, version)
+					if err != nil {
+						log.G(r.ctx).WithError(err).Errorf("Failed to prepare restore snapshot for container %s (version=%s)", r.containerID, version)
+						// Continue with normal creation if restore fails
+					} else {
+						restoreSnapshot = restoredSnapshotKey
+					}
+				} else {
+					log.G(r.ctx).Debugf("Container %s missing required metadata for restore (namespace=%s, podName=%s, containerName=%s)", r.containerID, namespace, podName, r.containerName)
+				}
+			} else {
+				log.G(r.ctx).Debugf("Container %s sandbox has no metadata for restore", r.containerID)
+			}
+		} else {
+			log.G(r.ctx).Debugf("Container %s restore annotation not found or not set to 'true'", r.containerID)
+		}
+	}
+
 	// Set snapshotter before any other options.
 	opts := []containerd.NewContainerOpts{
 		containerd.WithSnapshotter(c.RuntimeSnapshotter(r.ctx, ociRuntime)),
+	}
+	if restoreSnapshot != "" {
+		// Use restored snapshot
+		opts = append(opts, containerd.WithSnapshot(restoreSnapshot))
+	} else {
 		// Prepare container rootfs. This is always writeable even if
 		// the container wants a readonly rootfs since we want to give
 		// the runtime (runc) a chance to modify (e.g. to create mount
 		// points corresponding to spec.Mounts) before making the
 		// rootfs readonly (requested by spec.Root.Readonly).
-		customopts.WithNewSnapshot(r.containerID, *r.containerdImage, sOpts...),
+		opts = append(opts, customopts.WithNewSnapshot(r.containerID, *r.containerdImage, sOpts...))
 	}
 	if len(volumeMounts) > 0 {
 		mountMap := make(map[string]string)
